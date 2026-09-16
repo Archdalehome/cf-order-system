@@ -1,0 +1,13 @@
+{
+  "name": "cf-todolist",
+  "version": "1.0.0",
+  "description": "A simple todo list app deployable on Cloudflare Workers with KV storage",
+  "main": "src/index.js",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^3.78.0"
+  }
+}
