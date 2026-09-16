@@ -1,0 +1,11 @@
+name = "cf-todolist"
+main = "src/index.js"
+compatibility_date = "2024-09-23"
+
+# KV 命名空间绑定
+# 部署前请先创建 KV 命名空间：
+#   npx wrangler kv:namespace create TODO_KV
+# 然后将返回的 id 填入下方
+[[kv_namespaces]]
+binding = "TODO_KV"
+id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
