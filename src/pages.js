@@ -1879,7 +1879,8 @@ ${commonStyle}
   let isSuperadmin = false; // 超级管理员：只管理团队用户，不使用业务页面
   let isSuperviewer = false; // 总经理（拥有团队管理员的待办功能，但没有管理类功能）
   let isDeptManager = false; // 部门主管（同总经理；另有「是否可查看客户订单 / 采购订单」两个开关）
-  let isTodoManager = false; // 团队管理员 / 总经理 / 部门主管：可管理待办（状态、生产方、删除、编辑）
+  let isTodoManager = false; // 团队管理员 / 总经理 / 部门主管：可管理待办（生产方、删除、编辑等）
+  let canChangeStatus = false; // 可改变待办状态：仅团队管理员 / 总经理（部门主管为只读状态徽章，与业务部一致）
   let showAllUsers = false; // 团队管理员 / 总经理 / 观察类：显示全部用户的待办
   // 「已完成」折叠显示：默认只渲染 5 条，点「加载更多」每次再多显示 20 条（避免一次渲染太多导致卡顿）
   const DONE_PAGE_STEP = 20;
@@ -1943,6 +1944,8 @@ ${commonStyle}
     isSuperviewer = currentUser.role === 'superviewer';
     isDeptManager = currentUser.role === 'deptmanager';
     isTodoManager = isTeamAdmin || isSuperviewer || isDeptManager;
+    // 待办状态的可编辑范围：仅团队管理员 / 总经理；部门主管与业务部一样只读显示状态
+    canChangeStatus = isTeamAdmin || isSuperviewer;
     // 显示全部用户待办的场景：团队管理员 / 总经理 / 观察类角色（业务主管 / 生产部 / 生产方 / 客户）。
     // 注：业务部（editor / member）固定拥有「客户订单录入」权限，只能看到自己的订单，因此不在此列。
     showAllUsers = isTodoManager || isObserver;
@@ -2332,7 +2335,8 @@ ${commonStyle}
     // 状态展示：管理员用下拉可切换；其他用户用只读徽章
 
 
-    const statusEl = isTodoManager
+    // 状态展示：团队管理员 / 总经理用下拉可切换；其他用户（含部门主管、业务部）用只读徽章
+    const statusEl = canChangeStatus
       ? \`<select class="status-select" data-status-select="\${t.id}">
            <option value="pending"\${st === 'pending' ? ' selected' : ''}>待确认</option>
            <option value="doing"\${st === 'doing' ? ' selected' : ''}>进行中</option>

@@ -1446,6 +1446,13 @@ function canManageTodos(role) {
   return isTeamAdmin(role) || role === "superviewer" || isDeptManager(role);
 }
 
+// 改变待办状态（待确认 / 进行中 / 已完成）：**仅团队管理员 / 总经理**
+// （部门主管虽然能查看全部待办、指定生产方、删除待办，但状态在其清单里为**只读固定显示**，
+//   界面渲染为状态徽章（与业务部一致），接口同样拦截状态变更）
+function canChangeTodoStatus(role) {
+  return isTeamAdmin(role) || role === "superviewer";
+}
+
 // 部门主管（deptmanager）：功能参照「总经理」，另有 2 个可逐个开关的「查看」权限
 //   · 是否可查看客户订单（canViewCustomerOrder）：点 PO# 打开客户订单文件链接
 //   · 是否可查看采购订单（canViewPurchaseOrder）：点「外购单 / 自产单」打开采购文件链接
@@ -3147,10 +3154,11 @@ async function handleApi(request, env, pathname) {
     const id = decodeURIComponent(pathname.replace("/api/todos/", ""));
     const body = await readBody(request);
 
-    // 只有团队管理员 / 总经理可以改变待办状态（待确认/进行中/已完成）
+    // 只有团队管理员 / 总经理可以改变待办状态（待确认/进行中/已完成）；
+    // 部门主管的清单里状态为只读固定显示（界面不给下拉，接口同样拦截）
     const wantsStatusChange =
       typeof body.status === "string" || typeof body.done === "boolean";
-    if (wantsStatusChange && !canManageTodos(user.role)) {
+    if (wantsStatusChange && !canChangeTodoStatus(user.role)) {
       return json({ error: "只有团队管理员或总经理可以改变待办状态" }, 403);
     }
 
