@@ -413,7 +413,7 @@ function smtpErrorText(err, step, localDev) {
   const raw = err && err.message ? err.message : String(err);
   const code = (raw.match(/\b(\d{3})\b/) || [])[1] || "";
   const localHint =
-    "（本地 `wrangler dev` 不支持 SMTP 的 TLS：请改用「调试模式」，或部署到 Cloudflare 后测试）";
+    "（提示：本地 `wrangler dev` 已支持 SMTP 的 TLS；如持续超时请检查网络 / 端口是否被拦截，或先用「调试模式」联调）";
   let tip = "";
   if (code === "535" || code === "534") {
     tip =
@@ -424,10 +424,12 @@ function smtpErrorText(err, step, localDev) {
     tip = "（提示：QQ 邮箱要求「发件邮箱」与 SMTP 账号完全一致）";
   } else if (localDev && /secureTransport|starttls|tls|ssl|certificate|handshake|超时|关闭/i.test(raw)) {
     tip = localHint;
-  } else if (/secureTransport/i.test(raw)) {
-    tip = "（提示：当前运行环境不支持 startTls()，请把端口改为 465（SSL）后重试）";
+  } else if (/starttls must be set|secureTransport/i.test(raw)) {
+    tip = "（提示：587 必须先以 STARTTLS 建立连接再升级；若持续失败请把端口改为 465（SSL）重试）";
   } else if (/certificate|tls|ssl|handshake/i.test(raw)) {
     tip = "（提示：端口 465 使用 SSL，端口 587 使用 STARTTLS，请检查服务器 / 端口设置）";
+  } else if (/超时/.test(raw)) {
+    tip = "（提示：连接超时通常是网络或端口被拦截所致；QQ 邮箱请用 smtp.qq.com 的 465（SSL）或 587（STARTTLS））";
   }
   return `SMTP 发信失败（${step}）：${raw}${tip}`;
 }
@@ -503,16 +505,29 @@ async function smtpAttempt(port, cfg, mail, opts) {
   }
 
   async function dialog() {
+    // 等待 TCP（含隐式 TLS 时是 TLS 握手）真正建立，这样连接类错误能给出明确原因
+    step = `连接 ${host}:${port}`;
+    try {
+      await socket.opened;
+    } catch (e) {
+      throw new Error(`建立连接失败：${e && e.message ? e.message : e}`);
+    }
     const banner = await readReply();
     if (banner.code !== 220) {
       throw new Error(`服务器返回 ${banner.code} ${banner.text}`);
     }
-    const helo = `EHLO ${cfg.smtpEhlo || "cf-todolist"}`;
+    // EHLO 参数：默认取「发件邮箱」的域名（比随意的主机名更容易被 QQ 邮箱接受）
+    const ehloName =
+      cfg.smtpEhlo || String(cfg.from || "").split("@")[1] || "localhost";
+    const helo = `EHLO ${ehloName}`;
     await send(helo, [250]);
     if (port === 587) {
       step = "STARTTLS";
       await send("STARTTLS", [220]);
-      const tlsSocket = socket.startTls();
+      // ❗ 必须先释放旧 socket 的读 / 写锁，再调用 startTls()：
+      //    Cloudflare 会返回一整套新的 readable / writable；
+      //    而本地 Miniflare 等实现升级后可能复用同一对流对象，
+      //    若此时旧 writer 仍持有锁，取新 writer 会报「This WritableStream is currently locked to a writer」。
       try {
         reader.releaseLock();
       } catch (e) {
@@ -523,10 +538,10 @@ async function smtpAttempt(port, cfg, mail, opts) {
       } catch (e) {
         /* 忽略 */
       }
-      socket = tlsSocket;
+      socket = socket.startTls();
+      buf = "";
       reader = socket.readable.getReader();
       writer = socket.writable.getWriter();
-      buf = "";
       await send(helo, [250]);
     }
     // AUTH LOGIN：AUTH LOGIN → base64(账号) → base64(授权码)
@@ -557,11 +572,13 @@ async function smtpAttempt(port, cfg, mail, opts) {
 
   try {
     // connect() 也可能同步抛错（地址被禁止、参数非法等），因此整体包在 try 里
-    socket = connect({
-      hostname: host,
-      port,
-      secureTransport: port === 587 ? "starttls" : "on",
-    });
+    // ❗ secureTransport 必须作为 connect() 的「第二个参数（SocketOptions）」传入：
+    //    写成地址对象的字段会被运行时忽略（默认 off），结果 465 变成明文连接（服务器等 TLS 握手 → 超时无响应）、
+    //    587 调用 startTls() 时直接抛错（must be set to 'starttls'）。
+    //    · 465（隐式 SSL）：secureTransport: "on"
+    //    · 587（明文起步，EHLO 后 STARTTLS 升级）：secureTransport: "starttls"
+    const secureTransport = port === 587 ? "starttls" : "on";
+    socket = connect({ hostname: host, port }, { secureTransport });
     reader = socket.readable.getReader();
     writer = socket.writable.getWriter();
     return await withTimeout(dialog(), timeoutMs, () => {

@@ -312,16 +312,24 @@ name = "SEND_EMAIL"
 **正式环境请勿开启**。此外，本地 `npm run dev` 访问 `http://localhost:8787` 时若未配置邮件服务，
 会自动按调试模式处理（页面直接显示确认码）。
 
-> ⚠️ **本地 `wrangler dev` 无法真实发送 SMTP 邮件**（Miniflare 的本地 TCP 只做明文，不实现 TLS）：
-> 实测 **wrangler 3.114 与 4.135 均如此**（465 隐式 TLS 被对端断开、587 的 `startTls()` 直接报
-> `The secureTransport socket option must be set to 'starttls' ...`），用 `node:tls` 走 Node 兼容层同样超时。
-> 这是**运行时的本地限制，不是配置问题**，与端口/账号无关。
+> ✅ **SMTP 的 TLS / STARTTLS 说明（已实测）**：本地 `wrangler dev` 与线上 Cloudflare **都能**真实发送 SMTP 邮件，
+> 关键实现细节（修改代码时请勿破坏）：
+> - `connect()` 的 `secureTransport` **必须作为第二个参数（SocketOptions）传入**：
+>   `connect({ hostname, port }, { secureTransport: "on" | "starttls" })`。
+>   若把它写进第一个「地址对象」里会被运行时忽略（默认 `off`）→ 465 变成明文连接（对端等 TLS 握手 → 超时无响应）、
+>   587 调用 `startTls()` 直接抛 `The secureTransport socket option must be set to 'starttls' ...`。
+> - 465 用 `secureTransport: "on"`（隐式 SSL）；587 用 `secureTransport: "starttls"`，发完 `STARTTLS` 后
+>   必须先 `releaseLock()` 释放旧 `reader` / `writer`，再 `socket.startTls()` 并重新取新的读写流，
+>   否则会报 `This WritableStream is currently locked to a writer`。
+> - 仅 **25 端口**被 Cloudflare 禁止，465 / 587 均可用；`startTls()` 只能调用一次。
 >
-> - 本地开发：请勾选「**邮件设置 → 调试模式**」（确认码直接显示在页面上）；
-> - 想真实验证发信：**部署到 Cloudflare 后**在 `/admin` →「邮件设置」→「**发送测试邮件**」，
->   或用 `npx wrangler dev --remote`（代码跑在 Cloudflare 边缘，需先 `wrangler login` 并填好真实 KV 命名空间 id）。
+> 实测记录（本地 `wrangler dev` 直连真实 `smtp.qq.com`，用无效授权码）：465 与 587 都能完成握手与会话，
+> 返回 QQ 的 `535 Login fail ...`（即失败原因只剩「授权码 / 账号」本身）。
+>
+> - 本地开发若不想联网发信：可勾选「**邮件设置 → 调试模式**」（确认码直接显示在页面上）；
+> - 真实验证发信：在 `/admin` →「邮件设置」→「**发送测试邮件**」。
 > - 失败时会**逐端口汇总原因**并给出指引，例如：
->   `端口 465：…连接或响应超时（8 秒）（本地 wrangler dev 不支持 SMTP 的 TLS：请改用「调试模式」，或部署到 Cloudflare 后测试）；端口 587：…`
+>   `端口 465：…连接或响应超时（8 秒）…；端口 587：…（提示：QQ 邮箱必须使用「SMTP 授权码」…）`
 >
 > 💡 **端口自动回退**：代码会先按配置端口发送，失败时自动改另一个端口（465 ⇄ 587）重试一次，
 > 因此 465 / 587 只需填对账号与授权码即可，无需手动判断。
