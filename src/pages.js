@@ -1605,11 +1605,7 @@ ${commonStyle}
         <input type="password" id="newUserPwd" placeholder="密码" style="margin-bottom:8px">
         <select id="newUserRole" style="width:100%;padding:9px 12px;border:1px solid #e0e0dc;border-radius:6px;font-size:14px;background:#fff;color:#37352f;outline:none">
           <option value="editor">业务部(录入订单，须分配客户)</option>
-          <option value="restricted">生产部(查看生产单，须指定生产方)</option>
-          <option value="restricted" data-dept="计划部">计划部(查看生产单，须指定生产方)</option>
-          <option value="restricted" data-dept="采购部">采购部(查看生产单，须指定生产方)</option>
-          <option value="restricted" data-dept="品质部">品质部(查看生产单，须指定生产方)</option>
-          <option value="restricted" data-dept="财务部">财务部(查看生产单，须指定生产方)</option>
+          <option value="deptmanager">部门主管(同总经理；可开关是否查看客户/采购订单)</option>
           <option value="superviewer">总经理(最大权限，无团队设置/成员/生产方/客户管理)</option>
         </select>
       </div>
@@ -1882,7 +1878,8 @@ ${commonStyle}
   let teamIsPro = false;    // 所在团队是否在「专业版有效期内」：专业版改为「进行中」必须先指定生产方；试用团队无需（没有「生产方管理」）
   let isSuperadmin = false; // 超级管理员：只管理团队用户，不使用业务页面
   let isSuperviewer = false; // 总经理（拥有团队管理员的待办功能，但没有管理类功能）
-  let isTodoManager = false; // 团队管理员 / 总经理：可管理待办（状态、生产方、删除、编辑）
+  let isDeptManager = false; // 部门主管（同总经理；另有「是否可查看客户订单 / 采购订单」两个开关）
+  let isTodoManager = false; // 团队管理员 / 总经理 / 部门主管：可管理待办（状态、生产方、删除、编辑）
   let showAllUsers = false; // 团队管理员 / 总经理 / 观察类：显示全部用户的待办
   // 「已完成」折叠显示：默认只渲染 5 条，点「加载更多」每次再多显示 20 条（避免一次渲染太多导致卡顿）
   const DONE_PAGE_STEP = 20;
@@ -1944,7 +1941,8 @@ ${commonStyle}
     // 所在团队是否专业版有效期内：团队账号本人用自己的订阅状态；成员（总经理等）用 /api/me 返回的 teamPro
     teamIsPro = isTeamAdmin ? isProTeam : !!currentUser.teamPro;
     isSuperviewer = currentUser.role === 'superviewer';
-    isTodoManager = isTeamAdmin || isSuperviewer;
+    isDeptManager = currentUser.role === 'deptmanager';
+    isTodoManager = isTeamAdmin || isSuperviewer || isDeptManager;
     // 显示全部用户待办的场景：团队管理员 / 总经理 / 观察类角色（业务主管 / 生产部 / 生产方 / 客户）。
     // 注：业务部（editor / member）固定拥有「客户订单录入」权限，只能看到自己的订单，因此不在此列。
     showAllUsers = isTodoManager || isObserver;
@@ -2263,9 +2261,11 @@ ${commonStyle}
       : '';
     // 管理员 / 总经理：该待办填了「采购文件链接」时，生产方标签可点击直接打开采购文件
     // （其他角色页面仍为普通标签）
-    // 已填「采购文件链接」的灰色标签：团队管理员 / 总经理，以及「采购订单下单 = 有」的成员
-    // 都可点击直接打开采购文件；其余成员仍为只读标签
-    const canOpenPurchase = isTodoManager || !!currentUser.canPurchase;
+    // 已填「采购文件链接」的灰色标签：团队管理员 / 总经理，以及「是否可查看采购订单 = 是」的成员
+    // （部门主管用开关控制；业务部按「采购订单下单」权限）都可点击直接打开采购文件
+    const canOpenPurchase = currentUser.canViewPurchaseOrder !== undefined
+      ? !!currentUser.canViewPurchaseOrder
+      : (isTodoManager || !!currentUser.canPurchase); // 兜底：与历史行为一致
     const producerTagAsLink = canOpenPurchase && !!t.purchaseUrl;
     // 未填写「采购文件链接」时：标签改用黄色色块，提示需要补齐采购文件
     const producerWarn = !t.purchaseUrl;
@@ -2361,11 +2361,14 @@ ${commonStyle}
 
 
 
-    // PO#（标题）可点击的链接按角色区分：
-    //   管理员 / 业务部 / 生产方 / 客户 → 订单文件链接（orderUrl）
-    //   业务主管 / 生产部 → PO# 为纯文本，不可点击
-    const titleNoLink = isViewer || isRestricted;
-    const titleUrl = titleNoLink ? '' : (t.orderUrl || '');
+    // PO#（标题）可点击的链接：由「是否可查看客户订单」决定
+    //   · 团队管理员 / 业务部 / 生产方 / 客户：可点击（历史行为不变）
+    //   · 部门主管：按开关（未设置过默认可点击）
+    //   · 业务主管 / 生产部 / 总经理：纯文本不可点击
+    const canViewCustomer = currentUser.canViewCustomerOrder !== undefined
+      ? !!currentUser.canViewCustomerOrder
+      : !(isViewer || isRestricted); // 兜底：与历史行为一致
+    const titleUrl = canViewCustomer ? (t.orderUrl || '') : '';
     const titleHtml = titleUrl
       ? '<a class="todo-title-link" href="' + esc(titleUrl) + '" target="_blank" rel="noopener noreferrer"' +
         ' title="打开订单文件：' + esc(titleUrl) + '">' + esc(t.title) + '</a>'
@@ -2577,6 +2580,7 @@ ${commonStyle}
     viewer: '业务主管',
     restricted: '生产部',
     superviewer: '总经理',
+    deptmanager: '部门主管',
   };
 
   // 角标数字文案：>9 显示 9+
@@ -3042,11 +3046,13 @@ ${commonStyle}
     superadmin: '超级管理员', team: '团队管理员',
     editor: '业务部',
     viewer: '业务主管', restricted: '生产部',
-    superviewer: '总经理'
+    superviewer: '总经理',
+    deptmanager: '部门主管'
   };
   const ROLE_CLS = {
     superadmin: 'admin', team: 'admin', editor: '', viewer: 'viewer',
-    restricted: 'restricted', superviewer: 'superviewer'
+    restricted: 'restricted', superviewer: 'superviewer',
+    deptmanager: 'superviewer'
   };
 
   // 生产部 / 计划部 / 采购部 / 品质部 / 财务部：「可观察生产方」管理区块（成员管理弹窗内）
@@ -3339,19 +3345,29 @@ ${commonStyle}
         //   · 业务部（editor / 历史 member）：**固定拥有「客户订单录入」权限**（默认有、不提供开关），
         //     只保留「采购订单下单」开关（控制订单行右侧黄色「自产单 / 外购单」标签补填采购文件链接）；
         //   · 品质部 / 财务部：不需要下单相关权限，清单里不显示这些开关；
-        //   · 生产部 / 计划部 / 采购部 / 总经理：保留原来的单个「生产单下单权限」开关。
+        //   · 生产部 / 计划部 / 采购部 / 总经理（含历史账号）：保留单个「生产单下单权限」开关；
+        //   · 部门主管：生产单下单权限 + 「是否可查看客户订单 / 采购订单」两个开关（分行显示）。
         const noOrderPerm = u.role === 'restricted' &&
           (u.dept === '品质部' || u.dept === '财务部');
-        const permToggle = function (attr, text, on, hint) {
-          return '<label class="order-perm" title="' + text + '：有 = 允许，无 = 不允许">' +
+        // onText/offText：普通权限用「有 / 无」；部门主管的查看权限用「是 / 否」
+        const permToggle = function (attr, text, on, onText, offText) {
+          const a = onText || '有';
+          const b = offText || '无';
+          return '<label class="order-perm" title="' + text + '：' + a + ' = 允许，' + b + ' = 不允许">' +
             '<input type="checkbox" ' + attr + '="' + esc(u.username) + '"' + (on ? ' checked' : '') + '>' +
-            '<span>' + text + '：<b>' + (on ? '有' : '无') + '</b>' +
-            (hint ? ' <span class="order-perm-hint">' + hint + '</span>' : '') +
-            '</span></label>';
+            '<span>' + text + '：<b>' + (on ? a : b) + '</b></span></label>';
         };
+        const isDeptMgrRow = u.role === 'deptmanager';
         const orderPermBlock = noOrderPerm ? '' : (isEditor(u)
-          ? permToggle('data-canpurchase', '采购订单下单', !!u.canPurchase, '')
-          : permToggle('data-canorder', '生产单下单权限', !!u.canPlaceOrder, ''));
+          ? permToggle('data-canpurchase', '采购订单下单', !!u.canPurchase)
+          : (isDeptMgrRow
+            // 部门主管（功能参照总经理）：保留「生产单下单权限」，另加 2 个查看权限开关（分行显示）
+            ? '<div class="order-perm-col">' +
+                permToggle('data-canorder', '生产单下单权限', !!u.canPlaceOrder) +
+                permToggle('data-canvieworder', '是否可查看客户订单', u.canViewCustomerOrder !== false, '是', '否') +
+                permToggle('data-canviewpurchase', '是否可查看采购订单', u.canViewPurchaseOrder !== false, '是', '否') +
+              '</div>'
+            : permToggle('data-canorder', '生产单下单权限', !!u.canPlaceOrder)));
         return \`
         <div class="user-block">
           <div class="user-row">
@@ -3394,15 +3410,21 @@ ${commonStyle}
       });
       // 成员备注（点文字直接修改）
       bindDescEditors(list, () => loadUsers());
-      // 权限开关（客户订单录入 / 采购订单下单 / 生产单下单权限）：勾选后立即保存
-      list.querySelectorAll('[data-canorder], [data-canpurchase]').forEach(el => {
+      // 权限开关（勾选后立即保存）：生产单下单权限 / 采购订单下单 / 部门主管的两个查看权限
+      const permAttrs = [
+        ['data-canorder', 'canPlaceOrder'],
+        ['data-canpurchase', 'canPurchase'],
+        ['data-canvieworder', 'canViewCustomerOrder'],
+        ['data-canviewpurchase', 'canViewPurchaseOrder'],
+      ];
+      list.querySelectorAll(permAttrs.map(a => '[' + a[0] + ']').join(', ')).forEach(el => {
         el.addEventListener('change', async () => {
-          const isPurchase = el.hasAttribute('data-canpurchase');
-          const name = el.getAttribute(isPurchase ? 'data-canpurchase' : 'data-canorder');
+          const pair = permAttrs.filter(a => el.hasAttribute(a[0]))[0];
+          const name = el.getAttribute(pair[0]);
           el.disabled = true;
           try {
             const body = {};
-            body[isPurchase ? 'canPurchase' : 'canPlaceOrder'] = el.checked;
+            body[pair[1]] = el.checked;
             await api('/api/users/' + encodeURIComponent(name) + '/order-permission', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -3493,7 +3515,8 @@ ${commonStyle}
     const password = document.getElementById('newUserPwd').value;
     const roleSel = document.getElementById('newUserRole');
     const role = roleSel.value;
-    // 部门名：仅「生产部 / 计划部 / 采购部 / 品质部 / 财务部」这组选项带 data-dept（功能完全相同）
+    // 部门名：历史「生产部 / 计划部 / 采购部 / 品质部 / 财务部」选项带 data-dept，
+    // 现在新增成员已不再提供这些角色（仅历史账号保留），这里保留读取逻辑以便兼容
     const picked = roleSel.options[roleSel.selectedIndex];
     const dept = picked && picked.getAttribute ? picked.getAttribute('data-dept') || '' : '';
     if (!username || !password) {

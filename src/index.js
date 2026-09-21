@@ -1086,6 +1086,9 @@ async function listUsers(env, teamId) {
         canPlaceOrder: canPlaceOrder(u),
         // 采购订单下单权限（补填 / 打开采购文件链接；与「客户订单录入」相互独立）
         canPurchase: canPurchaseOrder(u),
+        // 「部门主管」的两个查看权限（其他角色按各自的历史规则计算，供界面展示）
+        canViewCustomerOrder: canViewCustomerOrder(u),
+        canViewPurchaseOrder: canViewPurchaseOrder(u),
       };
       // 生产部（含计划部 / 采购部 / 品质部 / 财务部）附带「可观察生产方」id 列表
       if (u.role === "restricted") {
@@ -1368,6 +1371,7 @@ const ROLE_LABEL = {
   producer: "生产方",
   customer: "客户",
   superviewer: "总经理",
+  deptmanager: "部门主管",
 };
 
 function roleLabel(role) {
@@ -1440,11 +1444,38 @@ function canPurchaseOrder(user) {
   return canPlaceOrder(user);
 }
 
-// 待办管理权限：团队管理员 / 总经理（总经理拥有团队管理员的全部待办相关功能：
-// 查看本团队所有用户的待办、改变状态、指定生产方、修改待确认待办、删除待办），
-// 但不具备「团队设置 / 成员管理 / 生产方管理 / 客户管理」这些管理功能。
+// 待办管理权限：团队管理员 / 总经理 / 部门主管
+// （总经理与部门主管拥有团队管理员的全部待办相关功能：查看本团队所有用户的待办、改变状态、
+//   指定生产方、修改待确认待办、删除待办），但不具备「团队设置 / 成员管理 / 生产方管理 / 客户管理」。
 function canManageTodos(role) {
-  return isTeamAdmin(role) || role === "superviewer";
+  return isTeamAdmin(role) || role === "superviewer" || isDeptManager(role);
+}
+
+// 部门主管（deptmanager）：功能参照「总经理」，另有 2 个可逐个开关的「查看」权限
+//   · 是否可查看客户订单（canViewCustomerOrder）：点 PO# 打开客户订单文件链接
+//   · 是否可查看采购订单（canViewPurchaseOrder）：点「外购单 / 自产单」打开采购文件链接
+function isDeptManager(role) {
+  return role === "deptmanager";
+}
+
+// 能否查看「客户订单」链接（订单文件链接 orderUrl）：团队管理员固定可看；
+//   部门主管按开关（未设置过默认「是」，与总经理现状一致）；其他角色保持历史行为
+//   （业务部 / 生产方 / 客户可看；总经理 / 业务主管 / 生产部等不可看）
+function canViewCustomerOrder(user) {
+  if (!user) return false;
+  if (isTeamAdmin(user.role)) return true;
+  if (isDeptManager(user.role)) return user.canViewCustomerOrder !== false;
+  return isSalesRole(user.role) || user.role === "producer" || user.role === "customer";
+}
+
+// 能否查看「采购订单」链接（采购文件链接 purchaseUrl）：团队管理员固定可看；
+//   部门主管按开关（未设置过默认「是」）；总经理固定可看；其他角色按「采购订单下单」权限
+function canViewPurchaseOrder(user) {
+  if (!user) return false;
+  if (isTeamAdmin(user.role)) return true;
+  if (isDeptManager(user.role)) return user.canViewPurchaseOrder !== false;
+  if (user.role === "superviewer") return true;
+  return canPurchaseOrder(user);
 }
 
 
@@ -1727,6 +1758,9 @@ async function handleApi(request, env, pathname) {
     info.canPlaceOrder = canPlaceOrder(user);
     // 采购订单下单权限（补填 / 打开采购文件链接）：与上面相互独立
     info.canPurchase = canPurchaseOrder(user);
+    // 「部门主管」的两个查看权限：① 点 PO# 打开客户订单链接 ② 点「外购单 / 自产单」打开采购文件链接
+    info.canViewCustomerOrder = canViewCustomerOrder(user);
+    info.canViewPurchaseOrder = canViewPurchaseOrder(user);
     if (isTeamAdmin(user.role)) {
       info.teamId = user.teamId || user.username;
       info.teamName = user.teamName || user.username;
@@ -2278,10 +2312,14 @@ async function handleApi(request, env, pathname) {
     if (!username || !password) {
       return json({ error: "请填写用户名和密码" }, 400);
     }
-    // 角色：editor=业务部（默认）；restricted=生产部 / 计划部 / 采购部 / 品质部 / 财务部
-    //（这 5 个部门权限完全相同，仅 dept 显示名不同）；superviewer=总经理
-    // 注：viewer（业务主管）已不再作为新增成员的选项 —— 历史账号仍保留该角色（只读查看「进行中/已完成」订单）
-    const finalRole = ["restricted", "superviewer"].includes(role) ? role : "editor";
+    // 角色（新增成员可选）：
+    //   editor=业务部（默认，固定拥有「客户订单录入」权限，可再开关「采购订单下单」）
+    //   deptmanager=部门主管（功能参照总经理，另有「是否可查看客户订单 / 采购订单」两个开关）
+    //   superviewer=总经理（团队管理员的全部待办功能，无管理类功能）
+    // 注：viewer（业务主管）与 restricted（生产部 / 计划部 / 采购部 / 品质部 / 财务部）
+    //     已不再作为新增成员的选项 —— 历史账号仍保留原角色与权限；
+    //     传入这些角色时按「业务部」创建。
+    const finalRole = ["superviewer", "deptmanager"].includes(role) ? role : "editor";
     const existing = await env.TODO_KV.get(`user:${username}`);
     if (existing) return json({ error: "用户名已存在" }, 400);
     const newUser = {
@@ -2403,8 +2441,12 @@ async function handleApi(request, env, pathname) {
     return json({ ok: true, remark: targetUser.remark });
   }
 
-  // ---- 生产单下单权限 / 采购订单下单权限「有 / 无」（专业版功能；团队管理员在「成员管理」里逐个开关）----
-  //   body 可带 canPlaceOrder（客户订单录入）、canPurchase（采购订单下单）任一或两者，均为布尔值
+  // ---- 权限开关（专业版功能；团队管理员在「成员管理」里逐个开关）----
+  //   body 可带以下布尔字段（任一或组合）：
+  //     canPlaceOrder           生产单下单权限（「客户订单录入」为业务部固定权限，不接受设置）
+  //     canPurchase             采购订单下单（业务部独立开关：补填 / 打开采购文件链接）
+  //     canViewCustomerOrder    是否可查看客户订单（仅「部门主管」：点 PO# 打开客户订单链接）
+  //     canViewPurchaseOrder    是否可查看采购订单（仅「部门主管」：点「外购单 / 自产单」打开采购文件）
   if (
     pathname.startsWith("/api/users/") &&
     pathname.endsWith("/order-permission") &&
@@ -2420,7 +2462,9 @@ async function handleApi(request, env, pathname) {
     const body = await readBody(request);
     const hasPlace = typeof body.canPlaceOrder === "boolean";
     const hasPurchase = typeof body.canPurchase === "boolean";
-    if (!hasPlace && !hasPurchase) {
+    const hasViewCustomer = typeof body.canViewCustomerOrder === "boolean";
+    const hasViewPurchase = typeof body.canViewPurchaseOrder === "boolean";
+    if (!hasPlace && !hasPurchase && !hasViewCustomer && !hasViewPurchase) {
       return json({ error: "请传入 true（有）或 false（无）" }, 400);
     }
     const targetUser = await getTeamMember(env, target, teamIdOf(user));
@@ -2431,6 +2475,18 @@ async function handleApi(request, env, pathname) {
         {
           error:
             "业务部成员默认拥有「客户订单录入」权限（无需设置）；如需只读查看全部订单，请把该成员的角色改为其他类型",
+        },
+        400
+      );
+    }
+    // 「部门主管」专属的两个查看权限：其他角色调用时给出明确提示（避免以为已生效）
+    if ((hasViewCustomer || hasViewPurchase) && !isDeptManager(targetUser.role)) {
+      return json(
+        {
+          error:
+            "「是否可查看客户订单 / 采购订单」仅适用于「部门主管」成员（当前成员角色："
+            + memberRoleLabel(targetUser)
+            + "）",
         },
         400
       );
@@ -2450,11 +2506,15 @@ async function handleApi(request, env, pathname) {
     }
     if (hasPlace) targetUser.canPlaceOrder = body.canPlaceOrder;
     if (hasPurchase) targetUser.canPurchase = body.canPurchase;
+    if (hasViewCustomer) targetUser.canViewCustomerOrder = body.canViewCustomerOrder;
+    if (hasViewPurchase) targetUser.canViewPurchaseOrder = body.canViewPurchaseOrder;
     await env.TODO_KV.put(`user:${target}`, JSON.stringify(targetUser));
     return json({
       ok: true,
       canPlaceOrder: canPlaceOrder(targetUser),
       canPurchase: canPurchaseOrder(targetUser),
+      canViewCustomerOrder: canViewCustomerOrder(targetUser),
+      canViewPurchaseOrder: canViewPurchaseOrder(targetUser),
     });
   }
 
