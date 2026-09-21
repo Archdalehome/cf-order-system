@@ -2902,7 +2902,12 @@ async function handleApi(request, env, pathname) {
     if (!canPlaceOrder(user)) {
       return json({ todos: await getAllTodos(env, teamId, false), readonly: true, allUsers: true });
     }
-    return json({ todos: await getTodos(env, user.username), readonly: false });
+    // 业务部成员：只返回自己的订单，但同样携带 owner（清单里每条订单都显示录入者）
+    const own = await getTodos(env, user.username);
+    return json({
+      todos: own.map((t) => Object.assign({}, t, { owner: user.username })),
+      readonly: false,
+    });
   }
 
   if (pathname === "/api/todos" && method === "POST") {

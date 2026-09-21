@@ -1347,6 +1347,20 @@ ${commonStyle}
     cursor: pointer;
   }
   .order-perm b { color: #37352f; font-weight: 600; }
+  /* 业务部成员：两个权限开关**分行**显示（客户订单录入 / 采购订单下单） */
+  .order-perm-col {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+  }
+  /* 权限开关后面的补充说明（如「客户订单录入」选「无」则为业务主管） */
+  .order-perm-hint {
+    color: #9b9a97;
+    font-size: 12px;
+    font-weight: 400;
+  }
+  .order-perm-hint b { color: #6b6b68; }
   /* 成员备注（成员管理列表内）：直接点文字改，不显示「备注」字样与按钮 */
   .remark-row {
     margin-top: 4px;
@@ -2211,8 +2225,14 @@ ${commonStyle}
 
   function renderItem(t) {
     const ownerAttr = t.owner ? \` data-owner="\${esc(t.owner)}"\` : '';
-    // 录入者标签：默认团队全部用户的待办可见，仅对他人的待办显示录入者（自己的待办不显示用户名）
-    const ownerTag = showAllUsers && t.owner && t.owner !== currentUser.username
+    // 录入者标签：
+    //   · 业务部成员：清单里**每条订单都显示录入者**（含自己的订单；关闭「客户订单录入」后
+    //     清单会显示全部订单，更需要逐条标出录入者）；
+    //   · 其他角色：只在能看他人订单时显示（团队管理员 / 总经理 / 观察类），自己的订单不显示用户名。
+    const isEditorView = currentUser.role === 'editor' || currentUser.role === 'member';
+    const showOwnerTag = !!t.owner &&
+      (isEditorView || (showAllUsers && t.owner !== currentUser.username));
+    const ownerTag = showOwnerTag
       ? \`<div class="todo-owner" title="录入者：\${esc(t.owner)}">\${esc(t.owner)}</div>\` : '';
     const st = statusOf(t);
     const doneCls = st === 'done' ? ' done' : '';
@@ -3327,15 +3347,20 @@ ${commonStyle}
         //   · 生产部 / 计划部 / 采购部 / 总经理：保留原来的单个「生产单下单权限」开关。
         const noOrderPerm = u.role === 'restricted' &&
           (u.dept === '品质部' || u.dept === '财务部');
-        const permToggle = function (attr, text, on) {
+        const permToggle = function (attr, text, on, hint) {
           return '<label class="order-perm" title="' + text + '：有 = 允许，无 = 不允许">' +
             '<input type="checkbox" ' + attr + '="' + esc(u.username) + '"' + (on ? ' checked' : '') + '>' +
-            '<span>' + text + '：<b>' + (on ? '有' : '无') + '</b></span></label>';
+            '<span>' + text + '：<b>' + (on ? '有' : '无') + '</b>' +
+            (hint ? ' <span class="order-perm-hint">' + hint + '</span>' : '') +
+            '</span></label>';
         };
+        // 业务部的两个开关**分行**显示：客户订单录入（无 = 业务主管，只读查看全部订单）/ 采购订单下单
         const orderPermBlock = noOrderPerm ? '' : (isEditor(u)
-          ? permToggle('data-canorder', '客户订单录入', !!u.canPlaceOrder) +
-            permToggle('data-canpurchase', '采购订单下单', !!u.canPurchase)
-          : permToggle('data-canorder', '生产单下单权限', !!u.canPlaceOrder));
+          ? '<div class="order-perm-col">' +
+              permToggle('data-canorder', '客户订单录入', !!u.canPlaceOrder, '（选「无」则为业务主管：可显示全部订单）') +
+              permToggle('data-canpurchase', '采购订单下单', !!u.canPurchase, '') +
+            '</div>'
+          : permToggle('data-canorder', '生产单下单权限', !!u.canPlaceOrder, ''));
         return \`
         <div class="user-block">
           <div class="user-row">
