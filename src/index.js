@@ -1425,6 +1425,9 @@ function canPlaceOrder(user) {
   if (isTeamAdmin(user.role)) return true;
   // 业务部：固定「有」（可录入客户订单），不参与开关设置
   if (isSalesRole(user.role)) return true;
+  // 总经理：固定「无」——总经理只做待办的查看与流转，不负责录入订单
+  //（订单列表上方的「添加新订单」录入区对总经理不再显示，成员管理里也不提供该开关）
+  if (user.role === "superviewer") return false;
   if (needsNoOrderPerm(user)) return false;
   if (typeof user.canPlaceOrder === "boolean") return user.canPlaceOrder;
   return false;
@@ -2476,6 +2479,13 @@ async function handleApi(request, env, pathname) {
           error:
             "业务部成员默认拥有「客户订单录入」权限（无需设置）；如需只读查看全部订单，请把该成员的角色改为其他类型",
         },
+        400
+      );
+    }
+    // 总经理固定不参与订单录入（成员管理里不显示该开关）
+    if (hasPlace && targetUser.role === "superviewer") {
+      return json(
+        { error: "总经理成员不需要「生产单下单权限」（固定不录入订单），无需设置" },
         400
       );
     }

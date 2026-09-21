@@ -3342,11 +3342,11 @@ ${commonStyle}
           </div>\`;
         }
         // 成员行右侧的权限开关：
-        //   · 业务部（editor / 历史 member）：**固定拥有「客户订单录入」权限**（默认有、不提供开关），
-        //     只保留「采购订单下单」开关（控制订单行右侧黄色「自产单 / 外购单」标签补填采购文件链接）；
-        //   · 品质部 / 财务部：不需要下单相关权限，清单里不显示这些开关；
-        //   · 生产部 / 计划部 / 采购部 / 总经理（含历史账号）：保留单个「生产单下单权限」开关；
-        //   · 部门主管：生产单下单权限 + 「是否可查看客户订单 / 采购订单」两个开关（分行显示）。
+        //   · 业务部（editor / 历史 member）：固定拥有「客户订单录入」，只保留「采购订单下单」开关；
+        //   · 部门主管：生产单下单权限 + 「是否可查看客户订单 / 采购订单」（分行显示）；
+        //   · 总经理：固定不录入订单（订单列表上方无「添加新订单」录入区），不显示任何开关；
+        //   · 品质部 / 财务部（历史账号）：不需要下单相关权限，不显示开关；
+        //   · 生产部 / 计划部 / 采购部（历史账号）：保留单个「生产单下单权限」开关。
         const noOrderPerm = u.role === 'restricted' &&
           (u.dept === '品质部' || u.dept === '财务部');
         // onText/offText：普通权限用「有 / 无」；部门主管的查看权限用「是 / 否」
@@ -3358,6 +3358,7 @@ ${commonStyle}
             '<span>' + text + '：<b>' + (on ? a : b) + '</b></span></label>';
         };
         const isDeptMgrRow = u.role === 'deptmanager';
+        const isSuperviewerRow = u.role === 'superviewer';
         const orderPermBlock = noOrderPerm ? '' : (isEditor(u)
           ? permToggle('data-canpurchase', '采购订单下单', !!u.canPurchase)
           : (isDeptMgrRow
@@ -3367,7 +3368,8 @@ ${commonStyle}
                 permToggle('data-canvieworder', '是否可查看客户订单', u.canViewCustomerOrder !== false, '是', '否') +
                 permToggle('data-canviewpurchase', '是否可查看采购订单', u.canViewPurchaseOrder !== false, '是', '否') +
               '</div>'
-            : permToggle('data-canorder', '生产单下单权限', !!u.canPlaceOrder)));
+            // 总经理：固定不录入订单，不显示任何权限开关
+            : (isSuperviewerRow ? '' : permToggle('data-canorder', '生产单下单权限', !!u.canPlaceOrder))));
         return \`
         <div class="user-block">
           <div class="user-row">
