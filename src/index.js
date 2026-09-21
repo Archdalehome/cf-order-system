@@ -38,6 +38,7 @@ const CODE_MAX_ATTEMPTS = 5; // 同一确认码最多允许输错 5 次（超过
 const CODE_RESEND_SEC = 60; // 同一账号两次发送确认码的最小间隔：60 秒
 const CODE_MAX_PER_HOUR = 5; // 同一账号 1 小时内最多发送 5 次
 const MAIL_TIMEOUT_MS = 10000; // 邮件接口请求超时保护（Resend / send_email 绑定）
+const SUB_QR_MAX = 3; // 订阅申请邮件里最多可插入的收款二维码图片数
 const SMTP_TIMEOUT_MS = 20000; // SMTP 与 QQ 邮箱通信的整体超时保护
 const SMTP_LOCAL_TIMEOUT_MS = 8000; // 本地 wrangler dev 无法做 TLS，超时缩短以便快速失败并给出指引
 
@@ -226,6 +227,56 @@ function isLocalRequest(request) {
   }
 }
 
+// 邮件里的时间显示（北京时间，格式 YYYY-MM-DD HH:mm）
+function formatMailTime(iso) {
+  const t = new Date(iso || Date.now());
+  if (Number.isNaN(t.getTime())) return String(iso || "");
+  const cn = new Date(t.getTime() + 8 * 60 * 60 * 1000);
+  const p = (n) => String(n).padStart(2, "0");
+  return (
+    `${cn.getUTCFullYear()}-${p(cn.getUTCMonth() + 1)}-${p(cn.getUTCDate())} ` +
+    `${p(cn.getUTCHours())}:${p(cn.getUTCMinutes())}`
+  );
+}
+
+// 收款二维码图片链接：固定返回最多的槽位（空槽位为 ""），仅保留合法的 http/https 链接
+function normalizeQrCodes(raw) {
+  const list = Array.isArray(raw) ? raw.slice(0, SUB_QR_MAX) : [];
+  const out = [];
+  for (let i = 0; i < SUB_QR_MAX; i++) {
+    const v = String(list[i] || "").trim();
+    out.push(v && v.length <= 300 && !/\s/.test(v) && /^https?:\/\//i.test(v) ? v : "");
+  }
+  return out;
+}
+
+// 抄送列表：过滤空值 / 非法邮箱 / 与收件人重复的地址
+function ccListOf(mail) {
+  const to = String((mail && mail.to) || "").trim().toLowerCase();
+  const raw = mail && mail.cc !== undefined && mail.cc !== null ? mail.cc : [];
+  const list = Array.isArray(raw) ? raw : [raw];
+  const out = [];
+  for (const item of list) {
+    const v = String(item || "").trim();
+    if (!v || !EMAIL_RE.test(v)) continue;
+    if (v.toLowerCase() === to) continue;
+    if (out.some((x) => x.toLowerCase() === v.toLowerCase())) continue;
+    out.push(v);
+  }
+  return out;
+}
+
+// 管理员提醒邮箱（团队提交订阅 / 续费申请时抄送）：邮件设置里配置的优先，
+// 未配置时依次回退「发件邮箱」→ 全局「忘记密码联系邮箱」
+function adminNotifyEmailOf(cfg, g) {
+  const candidates = [cfg && cfg.adminNotifyEmail, cfg && cfg.from, g && g.supportEmail];
+  for (const c of candidates) {
+    const v = String(c || "").trim();
+    if (v && EMAIL_RE.test(v)) return v;
+  }
+  return "";
+}
+
 // 读取邮件发送配置（用于发送注册邮箱确认码）：
 //   ① SMTP（推荐用 QQ 邮箱）：SMTP_USER（QQ 邮箱地址）+ SMTP_PASS（SMTP 授权码），
 //      默认 smtp.qq.com:465（SSL）；587 会自动走 STARTTLS。也支持 QQ_MAIL_USER / QQ_MAIL_PASS 别名；
@@ -254,6 +305,12 @@ async function getMailConfig(env) {
   const from = fromEnv || (smtpUser && EMAIL_RE.test(smtpUser) ? smtpUser : "");
   // 服务商优先级：Resend → SMTP（QQ 邮箱） → Cloudflare 邮件绑定
   const provider = apiKey ? "resend" : smtpUser && smtpPass ? "smtp" : binding ? "cloudflare" : "";
+  // 订阅 / 续费申请邮件的自定义内容（超级管理员在「邮件设置」中维护）：
+  //   adminNotifyEmail：管理员提醒邮箱（团队提交订阅申请时抄送，留空默认用发件邮箱）
+  //   subExtraText：自定义文字说明（付款方式、处理时限等）
+  //   subQrCodes：收款二维码图片链接（最多 SUB_QR_MAX 个，http/https）
+  const adminNotifyEmail = String(env.ADMIN_NOTIFY_EMAIL || saved.adminNotifyEmail || "").trim();
+  const subQrCodes = normalizeQrCodes(saved.subQrCodes);
   const source = apiKey
     ? env.RESEND_API_KEY
       ? "env"
@@ -275,6 +332,10 @@ async function getMailConfig(env) {
     smtpUser,
     smtpPass,
     binding,
+    // 订阅 / 续费申请邮件（发给申请人 + 抄送管理员提醒）
+    adminNotifyEmail,
+    subExtraText: String(saved.subExtraText || "").trim(),
+    subQrCodes,
     // 调试模式：不真实发信，直接把确认码回显到页面与日志（仅本地调试 / 演示使用）
     devMode: saved.devMode === true,
     // 配置来源：env=环境变量、kv=控制台保存、binding=Cloudflare 邮件绑定、none=未配置
@@ -352,6 +413,10 @@ function mailSettingsView(cfg, env) {
     hasSmtpPass: !!cfg.smtpPass,
     smtpPassMasked: maskKey(cfg.smtpPass),
     devMode: cfg.devMode,
+    // 订阅 / 续费申请邮件（发给申请人 + 抄送管理员提醒）
+    adminNotifyEmail: cfg.adminNotifyEmail || "",
+    subExtraText: cfg.subExtraText || "",
+    subQrCodes: normalizeQrCodes(cfg.subQrCodes).concat("").slice(0, SUB_QR_MAX),
     envApiKey: !!env.RESEND_API_KEY,
     envFrom: !!env.MAIL_FROM,
     envSmtp: !!(env.SMTP_USER || env.SMTP_PASS || env.QQ_MAIL_USER || env.QQ_MAIL_PASS),
@@ -365,15 +430,22 @@ function buildMimeMessage(cfg, mail) {
   const fromHeader = cfg.fromName
     ? `${encodeMimeHeader(cfg.fromName)} <${cfg.from}>`
     : `<${cfg.from}>`;
-  return [
+  const cc = ccListOf(mail);
+  const headers = [
     `From: ${fromHeader}`,
     `To: <${mail.to}>`,
+  ];
+  // 抄送（团队提交订阅 / 续费申请时抄送管理员提醒）
+  if (cc.length) headers.push(`Cc: ${cc.map((x) => `<${x}>`).join(", ")}`);
+  headers.push(
     `Subject: ${encodeMimeHeader(mail.subject || "")}`,
     `Date: ${new Date().toUTCString()}`,
     `Message-ID: <${genToken()}@${domain}>`,
     "MIME-Version: 1.0",
     `Content-Type: multipart/alternative; boundary="${boundary}"`,
-    "",
+    ""
+  );
+  return headers.concat([
     `--${boundary}`,
     "Content-Type: text/plain; charset=UTF-8",
     "Content-Transfer-Encoding: base64",
@@ -386,7 +458,7 @@ function buildMimeMessage(cfg, mail) {
     wrapB64(b64Utf8(mail.html || mail.text || "")),
     `--${boundary}--`,
     "",
-  ].join("\r\n");
+  ]).join("\r\n");
 }
 
 // 超时包装：SMTP 通信整体超时，避免注册请求被卡住
@@ -551,8 +623,13 @@ async function smtpAttempt(port, cfg, mail, opts) {
     await send(b64Utf8(cfg.smtpPass), [235]);
     step = "发件地址";
     await send(`MAIL FROM:<${cfg.from}>`, [250]);
-    step = "收件地址";
-    await send(`RCPT TO:<${mail.to}>`, [250, 251]);
+    // 收件人 + 抄送（团队提交订阅 / 续费申请时抄送管理员提醒）：
+    // SMTP 层面的「抄送」就是多一个 RCPT TO，同时在邮件头里带 Cc
+    const rcpts = [mail.to].concat(ccListOf(mail));
+    for (let i = 0; i < rcpts.length; i++) {
+      step = i === 0 ? "收件地址" : "抄送地址";
+      await send(`RCPT TO:<${rcpts[i]}>`, [250, 251]);
+    }
     step = "发送邮件正文";
     await send("DATA", [354]);
     // 正文点号转义（行首的 "." 变为 ".."），并以单独一行 "." 结束
@@ -626,13 +703,19 @@ async function sendMail(env, cfg, mail, opts) {
           Authorization: `Bearer ${cfg.apiKey}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          from: cfg.fromName ? `${cfg.fromName} <${cfg.from}>` : cfg.from,
-          to: [mail.to],
-          subject: mail.subject,
-          text: mail.text,
-          html: mail.html,
-        }),
+        body: JSON.stringify(
+          Object.assign(
+            {
+              from: cfg.fromName ? `${cfg.fromName} <${cfg.from}>` : cfg.from,
+              to: [mail.to],
+              subject: mail.subject,
+              text: mail.text,
+              html: mail.html,
+            },
+            // 抄送（订阅 / 续费申请邮件会抄送管理员提醒）
+            ccListOf(mail).length ? { cc: ccListOf(mail) } : {}
+          )
+        ),
         signal: controller.signal,
       });
       const data = await res.json().catch(() => ({}));
@@ -656,9 +739,11 @@ async function sendMail(env, cfg, mail, opts) {
   }
   // Cloudflare Email Routing 的 send_email 绑定
   try {
+    const cc = ccListOf(mail);
     await cfg.binding.send({
       from: cfg.fromName ? { name: cfg.fromName, email: cfg.from } : cfg.from,
-      to: mail.to,
+      // to 支持单个地址或地址数组：有抄送时一并投递（订阅 / 续费申请邮件抄送管理员提醒）
+      to: cc.length ? [mail.to].concat(cc) : mail.to,
       subject: mail.subject,
       html: mail.html,
       text: mail.text,
@@ -704,6 +789,109 @@ async function verifyCodeMailBody(env, user, code) {
     `<p style="font-size:26px;font-weight:700;letter-spacing:6px;color:#2383e2;margin:8px 0">${code}</p>` +
     `<p>有效期 <b>10 分钟</b>。请在注册 / 登录页面输入该确认码完成验证，验证通过后即可正常登录。</p>` +
     `<p style="color:#9b9a97;font-size:12px">若非本人操作，请忽略本邮件：验证通过前该账号无法登录。</p>` +
+    `</div>`;
+  return { subject, text, html };
+}
+
+// 订阅 / 续费申请邮件内容（主题 / 纯文本 / HTML）：
+//   收件人 = 申请人（团队账号邮箱），抄送 = 管理员提醒邮箱；
+//   正文 = 申请人信息 + 订阅套餐信息 + 超级管理员在「邮件设置」里维护的自定义说明与收款二维码
+async function subscribeRequestMailBody(env, team, req, cfg, kind) {
+  let siteName = "待办清单";
+  try {
+    const raw = await env.TODO_KV.get("settings");
+    if (raw) {
+      const s = JSON.parse(raw);
+      if (s && s.siteName) siteName = s.siteName;
+    }
+  } catch (e) {
+    /* 忽略 */
+  }
+  const isRenew = kind === "renew";
+  const kindText = isRenew ? "续费申请" : "订阅申请";
+  const teamName = team.teamName || team.username;
+  const plan = req && req.plan ? req.plan : null;
+  const planText = plan
+    ? `${plan.term}（￥${plan.price} / ${plan.days} 天）`
+    : "未选择套餐";
+  const atText = formatMailTime(req && req.at ? req.at : new Date().toISOString());
+  const extraText = String((cfg && cfg.subExtraText) || "").trim();
+  const qrs = normalizeQrCodes(cfg && cfg.subQrCodes).filter(Boolean);
+  const subject = `【${siteName}】${kindText}已收到：${teamName} · ${planText}`;
+
+  // ---- 纯文本 ----
+  const lines = [
+    `${teamName}，您好：`,
+    "",
+    `我们已收到您的「${kindText}」，信息如下（本邮件已同步抄送管理员）：`,
+    "",
+    "【申请人信息】",
+    `团队名称：${teamName}`,
+    `登录账号：${team.username}`,
+    `联系人：${team.contact || "（未填写）"}`,
+    `联系邮箱：${team.email || "（未填写）"}`,
+    `提交时间：${atText}`,
+    "",
+    "【订阅套餐】",
+    `申请类型：${kindText}`,
+    `套餐：${planText}`,
+    `留言：${(req && req.note) || "（无）"}`,
+    "",
+  ];
+  if (extraText) lines.push("【说明】", extraText, "");
+  if (qrs.length) {
+    lines.push("【收款二维码】");
+    qrs.forEach((u, i) => lines.push(`二维码 ${i + 1}：${u}`));
+    lines.push("");
+  }
+  lines.push(
+    "提交后由超级管理员为您开通；开通成功后即可使用成员 / 生产方 / 客户管理等全部功能。",
+    "如需补充信息，可在系统内重新提交申请（会覆盖上一次）。",
+    "",
+    siteName
+  );
+  const text = lines.join("\n");
+
+  // ---- HTML ----
+  const row = (k, v) =>
+    `<tr><td style="padding:4px 12px 4px 0;color:#6b6b68;white-space:nowrap">${escapeHtml(k)}</td>` +
+    `<td style="padding:4px 0;color:#37352f">${escapeHtml(v)}</td></tr>`;
+  const extraHtml = extraText
+    ? `<div style="margin:14px 0 6px;font-weight:600">说明</div>` +
+      `<div style="background:#f7f7f5;border-radius:8px;padding:12px;white-space:pre-wrap">${escapeHtml(extraText)}</div>`
+    : "";
+  const qrHtml = qrs.length
+    ? `<div style="margin:16px 0 6px;font-weight:600">收款二维码</div>` +
+      qrs
+        .map(
+          (u, i) =>
+            `<div style="display:inline-block;margin:0 12px 12px 0;text-align:center;vertical-align:top">` +
+            `<img src="${escapeHtml(u)}" alt="收款二维码 ${i + 1}" style="width:180px;height:180px;object-fit:contain;border:1px solid #e9e9e7;border-radius:8px;background:#fff">` +
+            `<div style="font-size:12px;color:#6b6b68;margin-top:4px">二维码 ${i + 1}</div></div>`
+        )
+        .join("")
+    : "";
+  const html =
+    `<div style="font-family:-apple-system,'Microsoft YaHei',sans-serif;font-size:14px;color:#37352f;line-height:1.7">` +
+    `<p>${escapeHtml(teamName)}，您好：</p>` +
+    `<p>我们已收到您的「<b>${escapeHtml(kindText)}</b>」，信息如下（本邮件已同步抄送管理员）：</p>` +
+    `<div style="margin:10px 0 6px;font-weight:600">申请人信息</div>` +
+    `<table style="border-collapse:collapse;font-size:14px">` +
+    row("团队名称", teamName) +
+    row("登录账号", team.username) +
+    row("联系人", team.contact || "（未填写）") +
+    row("联系邮箱", team.email || "（未填写）") +
+    row("提交时间", atText) +
+    `</table>` +
+    `<div style="margin:14px 0 6px;font-weight:600">订阅套餐</div>` +
+    `<table style="border-collapse:collapse;font-size:14px">` +
+    row("申请类型", kindText) +
+    row("套餐", planText) +
+    row("留言", (req && req.note) || "（无）") +
+    `</table>` +
+    extraHtml +
+    qrHtml +
+    `<p style="margin-top:16px;color:#6b6b68;font-size:13px">提交后由超级管理员为您开通；开通成功后即可使用成员 / 生产方 / 客户管理等全部功能。<br>如需补充信息，可在系统内重新提交申请（会覆盖上一次）。</p>` +
     `</div>`;
   return { subject, text, html };
 }
@@ -1661,7 +1849,55 @@ async function handleApi(request, env, pathname) {
     user.subscribeRequest = subscribeRequest;
     delete user.renewRequest; // 兼容历史字段名
     await env.TODO_KV.put(`user:${user.username}`, JSON.stringify(user));
-    return json({ ok: true, subscribeRequest });
+    // ---- 提交成功后发送邮件：收件人 = 申请人（注册邮箱），抄送 = 管理员提醒邮箱 ----
+    //   邮件内容：申请人信息 + 订阅套餐信息 + 「邮件设置」里维护的自定义说明与收款二维码
+    //   发信失败不影响申请提交（前端会提示邮件是否发送成功）
+    const mail = { ok: false, to: user.email || "", cc: [], error: "" };
+    try {
+      if (!user.email) {
+        mail.error = "该账号没有可用邮箱，无法发送申请邮件";
+      } else {
+        const cfg = await getMailConfig(env);
+        const g = await getGlobalSettings(env);
+        const notify = adminNotifyEmailOf(cfg, g);
+        mail.cc = ccListOf({ to: user.email, cc: notify ? [notify] : [] });
+        if (cfg.devMode) {
+          mail.ok = true;
+          mail.devMode = true;
+        } else {
+          const body = await subscribeRequestMailBody(
+            env,
+            user,
+            subscribeRequest,
+            cfg,
+            subscribeRequest.kind
+          );
+          const sent = await sendMail(
+            env,
+            cfg,
+            {
+              to: user.email,
+              cc: mail.cc,
+              subject: body.subject,
+              text: body.text,
+              html: body.html,
+            },
+            { local: isLocalRequest(request) }
+          );
+          mail.ok = !!sent.ok;
+          if (!sent.ok) mail.error = sent.error || "邮件发送失败";
+        }
+      }
+    } catch (e) {
+      mail.ok = false;
+      mail.error = "邮件发送异常：" + (e && e.message ? e.message : String(e));
+    }
+    console.log(
+      `[订阅申请邮件] ${user.username} -> ${mail.to || "-"}` +
+        (mail.cc && mail.cc.length ? `（抄送 ${mail.cc.join(", ")}）` : "") +
+        ` ${mail.ok ? "成功" : "失败：" + mail.error}`
+    );
+    return json({ ok: true, subscribeRequest, mail });
   }
 
   // ---- 团队用户管理（仅超级管理员：开通 / 停用 / 续费 / 重置密码 / 备注）----
@@ -1837,8 +2073,19 @@ async function handleApi(request, env, pathname) {
     const user = await getCurrentUser(request, env);
     if (!user) return json({ error: "未登录" }, 401);
     if (!isSuperAdmin(user.role)) return json({ error: "无权限" }, 403);
-    const { from, fromName, apiKey, devMode, smtpHost, smtpPort, smtpUser, smtpPass } =
-      await readBody(request);
+    const {
+      from,
+      fromName,
+      apiKey,
+      devMode,
+      smtpHost,
+      smtpPort,
+      smtpUser,
+      smtpPass,
+      adminNotifyEmail,
+      subExtraText,
+      subQrCodes,
+    } = await readBody(request);
     const raw = await env.TODO_KV.get("emailSettings");
     const saved = raw ? JSON.parse(raw) : {};
     if (from !== undefined) {
@@ -1885,6 +2132,43 @@ async function handleApi(request, env, pathname) {
       else if (v) saved.smtpPass = v;
     }
     if (devMode !== undefined) saved.devMode = !!devMode;
+    // ---- 订阅 / 续费申请邮件：管理员提醒邮箱（抄送）+ 自定义说明 + 收款二维码图片链接 ----
+    if (adminNotifyEmail !== undefined) {
+      const v = String(adminNotifyEmail || "").trim();
+      if (v && !EMAIL_RE.test(v)) {
+        return json({ error: "管理员提醒邮箱格式不正确（留空则默认抄送到发件邮箱）" }, 400);
+      }
+      saved.adminNotifyEmail = v;
+    }
+    if (subExtraText !== undefined) {
+      const v = String(subExtraText || "").replace(/\r\n/g, "\n").trim();
+      if (v.length > 1000) {
+        return json({ error: "自定义说明不能超过 1000 个字符" }, 400);
+      }
+      saved.subExtraText = v;
+    }
+    if (subQrCodes !== undefined) {
+      const list = Array.isArray(subQrCodes) ? subQrCodes.slice(0, SUB_QR_MAX) : [];
+      if (list.length && subQrCodes.length > SUB_QR_MAX) {
+        return json({ error: `收款二维码最多 ${SUB_QR_MAX} 个` }, 400);
+      }
+      for (let i = 0; i < list.length; i++) {
+        const v = String(list[i] || "").trim();
+        if (!v) continue;
+        if (v.length > 300) {
+          return json({ error: `收款二维码链接太长（第 ${i + 1} 个，最多 300 个字符）` }, 400);
+        }
+        if (normalizeOrderUrl(v) === null) {
+          return json(
+            { error: `收款二维码需填写以 http:// 或 https:// 开头的图片链接（第 ${i + 1} 个，留空则不显示）` },
+            400
+          );
+        }
+      }
+      const arr = normalizeQrCodes(list);
+      while (arr.length && !arr[arr.length - 1]) arr.pop(); // 去掉末尾空槽位，保持 KV 精简
+      saved.subQrCodes = arr;
+    }
     await env.TODO_KV.put("emailSettings", JSON.stringify(saved));
     const cfg = await getMailConfig(env);
     return json({ ok: true, settings: mailSettingsView(cfg, env) });

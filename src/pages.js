@@ -3951,7 +3951,8 @@ ${commonStyle}
         '（顺延 ' + pickedPlan.days + ' 天）',
       '开通后到期日：' + slashDate(proExpireDate(pickedPlan)) +
         '（从当前时间与原到期时间中较晚者起顺延）',
-      '提交后由超级管理员为您开通专业版；开通前仍按试用账号使用（仅限本人使用，可添加订单）。'
+      '提交后系统会把申请信息（含套餐与收款说明）发送到您的注册邮箱，并抄送管理员提醒；',
+      '开通由超级管理员完成，开通前仍按试用账号使用（仅限本人使用，可添加订单）。'
     ];
     const req = currentUser.subscribeRequest;
     if (req && req.at) {
@@ -4012,7 +4013,18 @@ ${commonStyle}
       currentUser.subscribeRequest = data.subscribeRequest || { at: new Date().toISOString() };
       currentUser.contact = document.getElementById('subContact').value.trim();
       msg.className = 'msg ok';
-      msg.textContent = mode + '申请已提交，超级管理员会尽快为您开通专业版';
+      // 申请邮件发送结果（发给申请人本人；有配置管理员提醒邮箱时同时抄送）
+      const m = data.mail || {};
+      let tip = mode + '申请已提交，超级管理员会尽快为您开通专业版';
+      if (m.devMode) {
+        tip += '（当前为调试模式，未真实发送邮件）';
+      } else if (m.ok) {
+        tip += '；申请邮件已发送至 ' + (m.to || '您的注册邮箱') +
+          (m.cc && m.cc.length ? '，并已抄送管理员提醒' : '');
+      } else if (m.error) {
+        tip += '；但申请邮件未能发送：' + m.error;
+      }
+      msg.textContent = tip;
       updateSubscribeButton();
       setTimeout(function () { document.getElementById('subscribeModal').classList.remove('show'); }, 1000);
     } catch (err) {
@@ -4470,6 +4482,31 @@ ${commonStyle}
           <label>Resend API Key（留空表示不修改，填 - 表示清除）</label>
           <input type="text" id="mailApiKey" autocomplete="off" placeholder="re_xxxxxxxx">
         </div>
+      </div>
+      <!-- 订阅 / 续费申请邮件：自定义内容（文字说明 + 最多 3 个收款二维码图片链接） -->
+      <div class="mail-group">
+        <div class="mail-group-title">订阅 / 续费申请邮件（发给申请人，并抄送管理员提醒）</div>
+        <div class="field">
+          <label>管理员提醒邮箱（抄送；留空默认抄送到「发件邮箱」）</label>
+          <input type="text" id="mailAdminNotify" maxlength="60" autocomplete="off" placeholder="例如：admin@example.com">
+        </div>
+        <div class="field">
+          <label>自定义文字说明（选填，会插入申请邮件正文）</label>
+          <textarea id="mailSubText" rows="3" maxlength="1000" placeholder="例如：请扫码支付后将截图回复本邮件，我们会在 1 个工作日内为您开通专业版。"></textarea>
+        </div>
+        <div class="field">
+          <label>收款二维码图片链接 1（http:// 或 https:// 开头；留空则不显示）</label>
+          <input type="text" id="mailQr1" maxlength="300" autocomplete="off" placeholder="https://example.com/qr-wechat.png">
+        </div>
+        <div class="field">
+          <label>收款二维码图片链接 2（选填）</label>
+          <input type="text" id="mailQr2" maxlength="300" autocomplete="off" placeholder="https://example.com/qr-alipay.png">
+        </div>
+        <div class="field">
+          <label>收款二维码图片链接 3（选填）</label>
+          <input type="text" id="mailQr3" maxlength="300" autocomplete="off" placeholder="https://example.com/qr-bank.png">
+        </div>
+        <div class="hint-line">团队账号在待办页点「订阅 / 续费」提交申请后，系统会自动把「申请人信息 + 套餐信息 + 上面的文字说明与二维码」发送到该团队的注册邮箱，并抄送给上面填写的管理员邮箱；申请记录仍会出现在控制台，由你点「开通 / 续费」处理。</div>
       </div>
       <div class="field">
         <label>发件邮箱地址（QQ 邮箱请与 SMTP 账号一致；Resend 请填已验证域名的邮箱）</label>
@@ -5029,6 +5066,13 @@ ${commonStyle}
       ? '已保存：' + mailCache.apiKeyMasked + '（留空表示不修改）'
       : 're_xxxxxxxx';
     document.getElementById('mailDevMode').checked = !!mailCache.devMode;
+    // 订阅 / 续费申请邮件：自定义说明 + 收款二维码 + 管理员提醒邮箱
+    document.getElementById('mailAdminNotify').value = mailCache.adminNotifyEmail || '';
+    document.getElementById('mailSubText').value = mailCache.subExtraText || '';
+    const qrs = Array.isArray(mailCache.subQrCodes) ? mailCache.subQrCodes : [];
+    for (let i = 1; i <= 3; i++) {
+      document.getElementById('mailQr' + i).value = qrs[i - 1] || '';
+    }
   }
 
   async function loadMailSettings() {
@@ -5066,6 +5110,14 @@ ${commonStyle}
           smtpHost: document.getElementById('mailSmtpHost').value.trim(),
           smtpPort: document.getElementById('mailSmtpPort').value.trim(),
           devMode: document.getElementById('mailDevMode').checked,
+          // 订阅 / 续费申请邮件（发给申请人 + 抄送管理员）
+          adminNotifyEmail: document.getElementById('mailAdminNotify').value.trim(),
+          subExtraText: document.getElementById('mailSubText').value.trim(),
+          subQrCodes: [
+            document.getElementById('mailQr1').value.trim(),
+            document.getElementById('mailQr2').value.trim(),
+            document.getElementById('mailQr3').value.trim(),
+          ],
         }),
       });
       applyMailSettings(data.settings);
