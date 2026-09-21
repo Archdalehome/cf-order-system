@@ -1931,7 +1931,9 @@ ${commonStyle}
     teamIsPro = isTeamAdmin ? isProTeam : !!currentUser.teamPro;
     isSuperviewer = currentUser.role === 'superviewer';
     isTodoManager = isTeamAdmin || isSuperviewer;
-    showAllUsers = isTodoManager || isObserver;
+    showAllUsers = isTodoManager || isObserver ||
+      // 业务部成员关闭「客户订单录入」后：只读查看本团队全部订单（后端 /api/todos 也会返回全部）
+      ((currentUser.role === 'editor' || currentUser.role === 'member') && !currentUser.canPlaceOrder);
     document.getElementById('currentUser').textContent = currentUser.username;
 
     // 客户输入框：试用团队账号把「客户下拉」换成「客户名称输入框」（后端自动记入客户列表）
@@ -2241,14 +2243,15 @@ ${commonStyle}
       : '';
     // 管理员 / 总经理：该待办填了「采购文件链接」时，生产方标签可点击直接打开采购文件
     // （其他角色页面仍为普通标签）
-    // 已填「采购文件链接」的灰色标签：团队管理员 / 总经理，以及「生产单下单权限 = 有」的成员
+    // 已填「采购文件链接」的灰色标签：团队管理员 / 总经理，以及「采购订单下单 = 有」的成员
     // 都可点击直接打开采购文件；其余成员仍为只读标签
-    const canOpenPurchase = isTodoManager || !!currentUser.canPlaceOrder;
+    const canOpenPurchase = isTodoManager || !!currentUser.canPurchase;
     const producerTagAsLink = canOpenPurchase && !!t.purchaseUrl;
     // 未填写「采购文件链接」时：标签改用黄色色块，提示需要补齐采购文件
     const producerWarn = !t.purchaseUrl;
-    // 黄色标签：有「生产单下单权限」的成员可点击直接补填采购文件链接
-    const canFillPurchase = producerWarn && !!currentUser.canPlaceOrder;
+    // 黄色标签：有「采购订单下单」权限的成员可点击直接补填采购文件链接
+    // （与「客户订单录入」相互独立：只开录入不开采购时，黄色标签仅作提示）
+    const canFillPurchase = producerWarn && !!currentUser.canPurchase;
     const producerTagCls = 'todo-producer' + (producerWarn ? ' todo-producer-warn' : '') +
       (canFillPurchase ? ' todo-producer-addable' : '');
     const producerNameTip = producerShort && producerShort !== producerLabel
@@ -2319,13 +2322,17 @@ ${commonStyle}
 
     // 业务主管：待办本身只读（无删除按钮），但可添加备注
     // 已进入「进行中/已完成」状态的事件不可删除（含管理员，避免误删）
-    const canDelete = !isObserver && st === 'pending';
+    // 只读查看他人订单：业务部成员关闭「客户订单录入」后可看到全部订单，
+    // 但对他人的订单不显示「删除订单」与「添加备注」（服务端也不允许操作他人待办）
+    const readonlyOther = !!(showAllUsers && !isTodoManager && !isObserver &&
+      t.owner && t.owner !== currentUser.username);
+    const canDelete = !isObserver && !readonlyOther && st === 'pending';
 
     const delBtn = canDelete
       ? \`<button class="btn-danger" data-del="\${t.id}">删除订单</button>\`
       : '';
-    // 已完成的事件不可再添加备注
-    const noteAddBlock = st === 'done'
+    // 已完成的事件不可再添加备注；只读查看的他人订单也不提供备注框
+    const noteAddBlock = (st === 'done' || readonlyOther)
       ? ''
       : \`<div class="note-add">
               <textarea class="note-input" data-note-input="\${t.id}" placeholder="添加备注（添加后不可删除；输入 @ 可提醒团队成员）..."></textarea>
@@ -3313,19 +3320,22 @@ ${commonStyle}
           </div>\`;
         }
         // 成员行右侧的权限开关：
-        //   · 业务部（editor / 历史 member）：文案显示为「客户订单录入」（含义与保存逻辑不变）；
-        //   · 品质部 / 财务部：这两个部门不需要下生产单，清单里不显示该开关。
+        //   · 业务部（editor / 历史 member）：两个**相互独立**的开关
+        //       - 客户订单录入（canPlaceOrder）：控制录入区 / 新增订单；
+        //       - 采购订单下单（canPurchase）：控制订单行右侧黄色「自产单 / 外购单」标签的补填采购文件链接；
+        //   · 品质部 / 财务部：不需要下单相关权限，清单里不显示这些开关；
+        //   · 生产部 / 计划部 / 采购部 / 总经理：保留原来的单个「生产单下单权限」开关。
         const noOrderPerm = u.role === 'restricted' &&
           (u.dept === '品质部' || u.dept === '财务部');
-        const permText = isEditor(u) ? '客户订单录入' : '生产单下单权限';
-        const permHint = isEditor(u)
-          ? '客户订单录入：有 = 允许录入客户订单，无 = 不允许'
-          : '生产单下单权限：有 = 允许下单，无 = 不允许';
-        const orderPermBlock = noOrderPerm ? '' : \`
-              <label class="order-perm" title="\${permHint}">
-                <input type="checkbox" data-canorder="\${esc(u.username)}"\${u.canPlaceOrder ? ' checked' : ''}>
-                <span>\${permText}：<b>\${u.canPlaceOrder ? '有' : '无'}</b></span>
-              </label>\`;
+        const permToggle = function (attr, text, on) {
+          return '<label class="order-perm" title="' + text + '：有 = 允许，无 = 不允许">' +
+            '<input type="checkbox" ' + attr + '="' + esc(u.username) + '"' + (on ? ' checked' : '') + '>' +
+            '<span>' + text + '：<b>' + (on ? '有' : '无') + '</b></span></label>';
+        };
+        const orderPermBlock = noOrderPerm ? '' : (isEditor(u)
+          ? permToggle('data-canorder', '客户订单录入', !!u.canPlaceOrder) +
+            permToggle('data-canpurchase', '采购订单下单', !!u.canPurchase)
+          : permToggle('data-canorder', '生产单下单权限', !!u.canPlaceOrder));
         return \`
         <div class="user-block">
           <div class="user-row">
@@ -3368,16 +3378,19 @@ ${commonStyle}
       });
       // 成员备注（点文字直接修改）
       bindDescEditors(list, () => loadUsers());
-      // 生产单下单权限（有 / 无）：勾选后立即保存
-      list.querySelectorAll('[data-canorder]').forEach(el => {
+      // 权限开关（客户订单录入 / 采购订单下单 / 生产单下单权限）：勾选后立即保存
+      list.querySelectorAll('[data-canorder], [data-canpurchase]').forEach(el => {
         el.addEventListener('change', async () => {
-          const name = el.getAttribute('data-canorder');
+          const isPurchase = el.hasAttribute('data-canpurchase');
+          const name = el.getAttribute(isPurchase ? 'data-canpurchase' : 'data-canorder');
           el.disabled = true;
           try {
+            const body = {};
+            body[isPurchase ? 'canPurchase' : 'canPlaceOrder'] = el.checked;
             await api('/api/users/' + encodeURIComponent(name) + '/order-permission', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ canPlaceOrder: el.checked }),
+              body: JSON.stringify(body),
             });
             await loadUsers();
           } catch (err) {

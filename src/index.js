@@ -1084,6 +1084,8 @@ async function listUsers(env, teamId) {
         dept: u.dept || "",
         // 生产单下单权限（团队管理员在「成员管理」里可逐个开关）
         canPlaceOrder: canPlaceOrder(u),
+        // 采购订单下单权限（补填 / 打开采购文件链接；与「客户订单录入」相互独立）
+        canPurchase: canPurchaseOrder(u),
       };
       // 生产部（含计划部 / 采购部 / 品质部 / 财务部）附带「可观察生产方」id 列表
       if (u.role === "restricted") {
@@ -1416,6 +1418,20 @@ function canPlaceOrder(user) {
   return user.role === "editor" || user.role === "member";
 }
 
+// 采购订单下单权限（订单行上黄色「自产单 / 外购单」标签：补填 / 打开采购文件链接）：
+//   · 团队管理员本人固定「有」；
+//   · 「品质部 / 财务部」固定「无」；
+//   · 其他成员以 user.canPurchase 为准（true=有 / false=无）；
+//   · 未设置过时按历史行为：与其「客户订单录入」保持一致（业务部=有，其他角色=无）。
+// 与「客户订单录入」是两个独立开关：录入订单、补填采购文件链接互不影响。
+function canPurchaseOrder(user) {
+  if (!user) return false;
+  if (isTeamAdmin(user.role)) return true;
+  if (needsNoOrderPerm(user)) return false;
+  if (typeof user.canPurchase === "boolean") return user.canPurchase;
+  return canPlaceOrder(user);
+}
+
 // 待办管理权限：团队管理员 / 总经理（总经理拥有团队管理员的全部待办相关功能：
 // 查看本团队所有用户的待办、改变状态、指定生产方、修改待确认待办、删除待办），
 // 但不具备「团队设置 / 成员管理 / 生产方管理 / 客户管理」这些管理功能。
@@ -1701,6 +1717,8 @@ async function handleApi(request, env, pathname) {
     const info = { username: user.username, role: user.role };
     // 生产单下单权限：团队管理员可在「成员管理」中为每个成员开关
     info.canPlaceOrder = canPlaceOrder(user);
+    // 采购订单下单权限（补填 / 打开采购文件链接）：与上面相互独立
+    info.canPurchase = canPurchaseOrder(user);
     if (isTeamAdmin(user.role)) {
       info.teamId = user.teamId || user.username;
       info.teamName = user.teamName || user.username;
@@ -2377,7 +2395,8 @@ async function handleApi(request, env, pathname) {
     return json({ ok: true, remark: targetUser.remark });
   }
 
-  // ---- 生产单下单权限「有 / 无」（专业版功能；团队管理员在「成员管理」里逐个开关）----
+  // ---- 生产单下单权限 / 采购订单下单权限「有 / 无」（专业版功能；团队管理员在「成员管理」里逐个开关）----
+  //   body 可带 canPlaceOrder（客户订单录入）、canPurchase（采购订单下单）任一或两者，均为布尔值
   if (
     pathname.startsWith("/api/users/") &&
     pathname.endsWith("/order-permission") &&
@@ -2390,26 +2409,35 @@ async function handleApi(request, env, pathname) {
     const target = decodeURIComponent(
       pathname.replace("/api/users/", "").replace("/order-permission", "")
     );
-    const { canPlaceOrder: value } = await readBody(request);
-    if (typeof value !== "boolean") {
+    const body = await readBody(request);
+    const hasPlace = typeof body.canPlaceOrder === "boolean";
+    const hasPurchase = typeof body.canPurchase === "boolean";
+    if (!hasPlace && !hasPurchase) {
       return json({ error: "请传入 true（有）或 false（无）" }, 400);
     }
     const targetUser = await getTeamMember(env, target, teamIdOf(user));
     if (!targetUser) return json({ error: "成员不存在" }, 404);
-    // 「品质部 / 财务部」成员不需要下生产单：成员管理里不显示该开关，接口也不允许开启
-    if (needsNoOrderPerm(targetUser)) {
+    // 「品质部 / 财务部」成员不需要下单相关权限：成员管理里不显示开关，接口也不允许开启
+    if (needsNoOrderPerm(targetUser) && (hasPlace || hasPurchase)) {
       return json(
         {
           error:
             memberRoleLabel(targetUser) +
-            "成员不需要「生产单下单权限」（该部门无录入/下单需求），无需设置",
+            "成员不需要「" +
+            (hasPurchase ? "采购订单下单" : "生产单下单权限") +
+            "」（该部门无录入/下单需求），无需设置",
         },
         400
       );
     }
-    targetUser.canPlaceOrder = value;
+    if (hasPlace) targetUser.canPlaceOrder = body.canPlaceOrder;
+    if (hasPurchase) targetUser.canPurchase = body.canPurchase;
     await env.TODO_KV.put(`user:${target}`, JSON.stringify(targetUser));
-    return json({ ok: true, canPlaceOrder: value });
+    return json({
+      ok: true,
+      canPlaceOrder: canPlaceOrder(targetUser),
+      canPurchase: canPurchaseOrder(targetUser),
+    });
   }
 
 
@@ -2869,6 +2897,11 @@ async function handleApi(request, env, pathname) {
         allUsers: true,
       });
     }
+    // 业务部成员关闭「客户订单录入」后：改为**只读查看本团队全部订单**（含待确认），
+    // 便于其继续了解团队订单进度；不能录入 / 修改状态 / 删除（相关接口另有角色校验）。
+    if (!canPlaceOrder(user)) {
+      return json({ todos: await getAllTodos(env, teamId, false), readonly: true, allUsers: true });
+    }
     return json({ todos: await getTodos(env, user.username), readonly: false });
   }
 
@@ -3130,7 +3163,8 @@ async function handleApi(request, env, pathname) {
   }
 
   // ---- 补填「采购文件链接」（订单行上缺链接的黄色「自产单 / 外购单」标签）----
-  //   规则：① 登录且「生产单下单权限 = 有」（团队管理员固定有；业务部成员界面上叫「客户订单录入」）；
+  //   规则：① 登录且「采购订单下单」权限 = 有（团队管理员固定有；业务部成员在「成员管理」中单独开关，
+  //          与「客户订单录入」相互独立）；
   //         ② 只能补「当前没有采购文件链接」的订单（已有链接仍需团队管理员在「待确认」阶段修改）；
   //         ③ 只能操作自己或本团队成员的订单（团队隔离）；不限订单状态。
   if (
@@ -3140,14 +3174,12 @@ async function handleApi(request, env, pathname) {
   ) {
     const user = await getCurrentUser(request, env);
     if (!user) return json({ error: "未登录" }, 401);
-    if (!canPlaceOrder(user)) {
+    if (!canPurchaseOrder(user)) {
       return json(
         {
           error:
             memberRoleLabel(user) +
-            "无「" +
-            orderPermLabel(user) +
-            "」，请联系团队管理员在「成员管理」中开通",
+            "无「采购订单下单」权限，请联系团队管理员在「成员管理」中开通",
         },
         403
       );
