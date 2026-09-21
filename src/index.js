@@ -1392,11 +1392,12 @@ function isObserverRole(role) {
 
 // 生产单下单权限（团队管理员可在「成员管理」里对每个成员逐个开关）：
 //   · 团队管理员本人固定「有」；
+//   · **业务部（editor / 历史 member）固定「有」** —— 业务部默认就应能录入客户订单，
+//     成员管理里**不再提供该开关**（历史数据里若存过 false 也一律按「有」处理）；
 //   · 「品质部 / 财务部」成员（restricted + dept）不需要下生产单：固定「无」，
 //     成员管理清单里也不再显示该开关（见 NO_ORDER_DEPTS）；
-//   · 其他成员以 user.canPlaceOrder 为准（true=有 / false=无）；
-//   · 未设置过的成员按角色默认：业务部=有，其他角色=无（与历史行为一致）。
-// 注：业务部成员在「成员管理」里的开关文案显示为「客户订单录入」（含义与保存逻辑不变）。
+//   · 其他成员（生产部 / 计划部 / 采购部 / 总经理）以 user.canPlaceOrder 为准
+//     （未设置过时按「无」，与历史行为一致）。
 const NO_ORDER_DEPTS = ["品质部", "财务部"]; // 这两个部门不需要「生产单下单权限」
 
 // 是否属于「不需要下生产单」的部门成员（品质部 / 财务部）
@@ -1404,18 +1405,25 @@ function needsNoOrderPerm(user) {
   return !!user && user.role === "restricted" && NO_ORDER_DEPTS.includes(user.dept || "");
 }
 
+// 业务部成员（editor / 历史 member）：固定拥有「客户订单录入」权限
+function isSalesRole(role) {
+  return role === "editor" || role === "member";
+}
+
 // 权限名称（界面文案）：业务部显示为「客户订单录入」，其他角色仍是「生产单下单权限」
 function orderPermLabel(user) {
   const role = user && user.role;
-  return role === "editor" || role === "member" ? "客户订单录入" : "生产单下单权限";
+  return isSalesRole(role) ? "客户订单录入" : "生产单下单权限";
 }
 
 function canPlaceOrder(user) {
   if (!user) return false;
   if (isTeamAdmin(user.role)) return true;
+  // 业务部：固定「有」（可录入客户订单），不参与开关设置
+  if (isSalesRole(user.role)) return true;
   if (needsNoOrderPerm(user)) return false;
   if (typeof user.canPlaceOrder === "boolean") return user.canPlaceOrder;
-  return user.role === "editor" || user.role === "member";
+  return false;
 }
 
 // 采购订单下单权限（订单行上黄色「自产单 / 外购单」标签：补填 / 打开采购文件链接）：
@@ -2417,6 +2425,16 @@ async function handleApi(request, env, pathname) {
     }
     const targetUser = await getTeamMember(env, target, teamIdOf(user));
     if (!targetUser) return json({ error: "成员不存在" }, 404);
+    // 业务部成员固定拥有「客户订单录入」权限：不提供开关，接口也不允许设置
+    if (hasPlace && isSalesRole(targetUser.role)) {
+      return json(
+        {
+          error:
+            "业务部成员默认拥有「客户订单录入」权限（无需设置）；如需只读查看全部订单，请把该成员的角色改为其他类型",
+        },
+        400
+      );
+    }
     // 「品质部 / 财务部」成员不需要下单相关权限：成员管理里不显示开关，接口也不允许开启
     if (needsNoOrderPerm(targetUser) && (hasPlace || hasPurchase)) {
       return json(
@@ -2897,12 +2915,9 @@ async function handleApi(request, env, pathname) {
         allUsers: true,
       });
     }
-    // 业务部成员关闭「客户订单录入」后：改为**只读查看本团队全部订单**（含待确认），
-    // 便于其继续了解团队订单进度；不能录入 / 修改状态 / 删除（相关接口另有角色校验）。
-    if (!canPlaceOrder(user)) {
-      return json({ todos: await getAllTodos(env, teamId, false), readonly: true, allUsers: true });
-    }
-    // 业务部成员：只返回自己的订单，但同样携带 owner（清单里每条订单都显示录入者）
+    // 业务部成员：只返回自己的订单，并携带 owner（清单里每条订单都显示录入者）
+    // 注：业务部（editor / member）始终拥有「客户订单录入」权限（见 canPlaceOrder），
+    //     成员管理里不再提供该开关，因此这里不再有「关闭录入后只读查看全部订单」的分支。
     const own = await getTodos(env, user.username);
     return json({
       todos: own.map((t) => Object.assign({}, t, { owner: user.username })),

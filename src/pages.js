@@ -1945,9 +1945,9 @@ ${commonStyle}
     teamIsPro = isTeamAdmin ? isProTeam : !!currentUser.teamPro;
     isSuperviewer = currentUser.role === 'superviewer';
     isTodoManager = isTeamAdmin || isSuperviewer;
-    showAllUsers = isTodoManager || isObserver ||
-      // 业务部成员关闭「客户订单录入」后：只读查看本团队全部订单（后端 /api/todos 也会返回全部）
-      ((currentUser.role === 'editor' || currentUser.role === 'member') && !currentUser.canPlaceOrder);
+    // 显示全部用户待办的场景：团队管理员 / 总经理 / 观察类角色（业务主管 / 生产部 / 生产方 / 客户）。
+    // 注：业务部（editor / member）固定拥有「客户订单录入」权限，只能看到自己的订单，因此不在此列。
+    showAllUsers = isTodoManager || isObserver;
     document.getElementById('currentUser').textContent = currentUser.username;
 
     // 客户输入框：试用团队账号把「客户下拉」换成「客户名称输入框」（后端自动记入客户列表）
@@ -2342,17 +2342,13 @@ ${commonStyle}
 
     // 业务主管：待办本身只读（无删除按钮），但可添加备注
     // 已进入「进行中/已完成」状态的事件不可删除（含管理员，避免误删）
-    // 只读查看他人订单：业务部成员关闭「客户订单录入」后可看到全部订单，
-    // 但对他人的订单不显示「删除订单」与「添加备注」（服务端也不允许操作他人待办）
-    const readonlyOther = !!(showAllUsers && !isTodoManager && !isObserver &&
-      t.owner && t.owner !== currentUser.username);
-    const canDelete = !isObserver && !readonlyOther && st === 'pending';
+    const canDelete = !isObserver && st === 'pending';
 
     const delBtn = canDelete
       ? \`<button class="btn-danger" data-del="\${t.id}">删除订单</button>\`
       : '';
-    // 已完成的事件不可再添加备注；只读查看的他人订单也不提供备注框
-    const noteAddBlock = (st === 'done' || readonlyOther)
+    // 已完成的事件不可再添加备注
+    const noteAddBlock = st === 'done'
       ? ''
       : \`<div class="note-add">
               <textarea class="note-input" data-note-input="\${t.id}" placeholder="添加备注（添加后不可删除；输入 @ 可提醒团队成员）..."></textarea>
@@ -3340,9 +3336,8 @@ ${commonStyle}
           </div>\`;
         }
         // 成员行右侧的权限开关：
-        //   · 业务部（editor / 历史 member）：两个**相互独立**的开关
-        //       - 客户订单录入（canPlaceOrder）：控制录入区 / 新增订单；
-        //       - 采购订单下单（canPurchase）：控制订单行右侧黄色「自产单 / 外购单」标签的补填采购文件链接；
+        //   · 业务部（editor / 历史 member）：**固定拥有「客户订单录入」权限**（默认有、不提供开关），
+        //     只保留「采购订单下单」开关（控制订单行右侧黄色「自产单 / 外购单」标签补填采购文件链接）；
         //   · 品质部 / 财务部：不需要下单相关权限，清单里不显示这些开关；
         //   · 生产部 / 计划部 / 采购部 / 总经理：保留原来的单个「生产单下单权限」开关。
         const noOrderPerm = u.role === 'restricted' &&
@@ -3354,12 +3349,8 @@ ${commonStyle}
             (hint ? ' <span class="order-perm-hint">' + hint + '</span>' : '') +
             '</span></label>';
         };
-        // 业务部的两个开关**分行**显示：客户订单录入（无 = 业务主管，只读查看全部订单）/ 采购订单下单
         const orderPermBlock = noOrderPerm ? '' : (isEditor(u)
-          ? '<div class="order-perm-col">' +
-              permToggle('data-canorder', '客户订单录入', !!u.canPlaceOrder, '（选「无」则为业务主管：可显示全部订单）') +
-              permToggle('data-canpurchase', '采购订单下单', !!u.canPurchase, '') +
-            '</div>'
+          ? permToggle('data-canpurchase', '采购订单下单', !!u.canPurchase, '')
           : permToggle('data-canorder', '生产单下单权限', !!u.canPlaceOrder, ''));
         return \`
         <div class="user-block">
