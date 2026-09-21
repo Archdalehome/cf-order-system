@@ -3312,6 +3312,20 @@ ${commonStyle}
             <div class="customer-add-row">\${addRow}</div>
           </div>\`;
         }
+        // 成员行右侧的权限开关：
+        //   · 业务部（editor / 历史 member）：文案显示为「客户订单录入」（含义与保存逻辑不变）；
+        //   · 品质部 / 财务部：这两个部门不需要下生产单，清单里不显示该开关。
+        const noOrderPerm = u.role === 'restricted' &&
+          (u.dept === '品质部' || u.dept === '财务部');
+        const permText = isEditor(u) ? '客户订单录入' : '生产单下单权限';
+        const permHint = isEditor(u)
+          ? '客户订单录入：有 = 允许录入客户订单，无 = 不允许'
+          : '生产单下单权限：有 = 允许下单，无 = 不允许';
+        const orderPermBlock = noOrderPerm ? '' : \`
+              <label class="order-perm" title="\${permHint}">
+                <input type="checkbox" data-canorder="\${esc(u.username)}"\${u.canPlaceOrder ? ' checked' : ''}>
+                <span>\${permText}：<b>\${u.canPlaceOrder ? '有' : '无'}</b></span>
+              </label>\`;
         return \`
         <div class="user-block">
           <div class="user-row">
@@ -3321,10 +3335,7 @@ ${commonStyle}
               \${editTextHtml('user', u.username, u.username, u.remark, '未填写', 'remark-row')}
             </div>
             <div class="user-row-actions">
-              <label class="order-perm" title="生产单下单权限：有 = 允许下单，无 = 不允许">
-                <input type="checkbox" data-canorder="\${esc(u.username)}"\${u.canPlaceOrder ? ' checked' : ''}>
-                <span>生产单下单权限：<b>\${u.canPlaceOrder ? '有' : '无'}</b></span>
-              </label>
+              \${orderPermBlock}
               <button class="btn-secondary-sm" data-resetpwd="\${esc(u.username)}">重置密码</button>
               <button class="btn-danger" data-deluser="\${esc(u.username)}">删除</button>
             </div>

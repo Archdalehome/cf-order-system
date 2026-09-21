@@ -1390,11 +1390,28 @@ function isObserverRole(role) {
 
 // 生产单下单权限（团队管理员可在「成员管理」里对每个成员逐个开关）：
 //   · 团队管理员本人固定「有」；
+//   · 「品质部 / 财务部」成员（restricted + dept）不需要下生产单：固定「无」，
+//     成员管理清单里也不再显示该开关（见 NO_ORDER_DEPTS）；
 //   · 其他成员以 user.canPlaceOrder 为准（true=有 / false=无）；
 //   · 未设置过的成员按角色默认：业务部=有，其他角色=无（与历史行为一致）。
+// 注：业务部成员在「成员管理」里的开关文案显示为「客户订单录入」（含义与保存逻辑不变）。
+const NO_ORDER_DEPTS = ["品质部", "财务部"]; // 这两个部门不需要「生产单下单权限」
+
+// 是否属于「不需要下生产单」的部门成员（品质部 / 财务部）
+function needsNoOrderPerm(user) {
+  return !!user && user.role === "restricted" && NO_ORDER_DEPTS.includes(user.dept || "");
+}
+
+// 权限名称（界面文案）：业务部显示为「客户订单录入」，其他角色仍是「生产单下单权限」
+function orderPermLabel(user) {
+  const role = user && user.role;
+  return role === "editor" || role === "member" ? "客户订单录入" : "生产单下单权限";
+}
+
 function canPlaceOrder(user) {
   if (!user) return false;
   if (isTeamAdmin(user.role)) return true;
+  if (needsNoOrderPerm(user)) return false;
   if (typeof user.canPlaceOrder === "boolean") return user.canPlaceOrder;
   return user.role === "editor" || user.role === "member";
 }
@@ -2379,6 +2396,17 @@ async function handleApi(request, env, pathname) {
     }
     const targetUser = await getTeamMember(env, target, teamIdOf(user));
     if (!targetUser) return json({ error: "成员不存在" }, 404);
+    // 「品质部 / 财务部」成员不需要下生产单：成员管理里不显示该开关，接口也不允许开启
+    if (needsNoOrderPerm(targetUser)) {
+      return json(
+        {
+          error:
+            memberRoleLabel(targetUser) +
+            "成员不需要「生产单下单权限」（该部门无录入/下单需求），无需设置",
+        },
+        400
+      );
+    }
     targetUser.canPlaceOrder = value;
     await env.TODO_KV.put(`user:${target}`, JSON.stringify(targetUser));
     return json({ ok: true, canPlaceOrder: value });
@@ -2851,7 +2879,13 @@ async function handleApi(request, env, pathname) {
     // （历史行为不变：业务部有、业务主管/生产部/总经理无）
     if (!canPlaceOrder(user)) {
       return json(
-        { error: memberRoleLabel(user) + "无「生产单下单权限」，请联系团队管理员在「成员管理」中开通" },
+        {
+          error:
+            memberRoleLabel(user) +
+            "无「" +
+            orderPermLabel(user) +
+            "」，请联系团队管理员在「成员管理」中开通",
+        },
         403
       );
     }
@@ -3096,7 +3130,7 @@ async function handleApi(request, env, pathname) {
   }
 
   // ---- 补填「采购文件链接」（订单行上缺链接的黄色「自产单 / 外购单」标签）----
-  //   规则：① 登录且「生产单下单权限 = 有」（团队管理员固定有）；
+  //   规则：① 登录且「生产单下单权限 = 有」（团队管理员固定有；业务部成员界面上叫「客户订单录入」）；
   //         ② 只能补「当前没有采购文件链接」的订单（已有链接仍需团队管理员在「待确认」阶段修改）；
   //         ③ 只能操作自己或本团队成员的订单（团队隔离）；不限订单状态。
   if (
@@ -3108,7 +3142,13 @@ async function handleApi(request, env, pathname) {
     if (!user) return json({ error: "未登录" }, 401);
     if (!canPlaceOrder(user)) {
       return json(
-        { error: memberRoleLabel(user) + "无「生产单下单权限」，请联系团队管理员在「成员管理」中开通" },
+        {
+          error:
+            memberRoleLabel(user) +
+            "无「" +
+            orderPermLabel(user) +
+            "」，请联系团队管理员在「成员管理」中开通",
+        },
         403
       );
     }
