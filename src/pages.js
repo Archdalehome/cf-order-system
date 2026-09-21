@@ -3343,8 +3343,9 @@ ${commonStyle}
         }
         // 成员行右侧的权限开关：
         //   · 业务部（editor / 历史 member）：固定拥有「客户订单录入」，只保留「采购订单下单」开关；
-        //   · 部门主管：生产单下单权限 + 「是否可查看客户订单 / 采购订单」（分行显示）；
-        //   · 总经理：固定不录入订单（订单列表上方无「添加新订单」录入区），不显示任何开关；
+        //   · 部门主管：固定不录入订单（订单列表上方无「添加新订单」录入区），
+        //     只显示「是否可查看客户订单 / 采购订单」两个查看开关（分行显示）；
+        //   · 总经理：固定不录入订单，不显示任何开关；
         //   · 品质部 / 财务部（历史账号）：不需要下单相关权限，不显示开关；
         //   · 生产部 / 计划部 / 采购部（历史账号）：保留单个「生产单下单权限」开关。
         const noOrderPerm = u.role === 'restricted' &&
@@ -3362,9 +3363,8 @@ ${commonStyle}
         const orderPermBlock = noOrderPerm ? '' : (isEditor(u)
           ? permToggle('data-canpurchase', '采购订单下单', !!u.canPurchase)
           : (isDeptMgrRow
-            // 部门主管（功能参照总经理）：保留「生产单下单权限」，另加 2 个查看权限开关（分行显示）
+            // 部门主管（功能参照总经理）：固定不录入订单，只保留 2 个查看权限开关（分行显示）
             ? '<div class="order-perm-col">' +
-                permToggle('data-canorder', '生产单下单权限', !!u.canPlaceOrder) +
                 permToggle('data-canvieworder', '是否可查看客户订单', u.canViewCustomerOrder !== false, '是', '否') +
                 permToggle('data-canviewpurchase', '是否可查看采购订单', u.canViewPurchaseOrder !== false, '是', '否') +
               '</div>'
